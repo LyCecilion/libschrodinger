@@ -68,6 +68,15 @@ static char g_konsole[PATH_MAX];
 static char g_kitty[PATH_MAX];
 static char g_gdb[PATH_MAX];
 
+/* LD_PRELOAD-free environment snapshot, built at load time. unsetenv() is NOT
+ * async-signal-safe (it locks environ), so removing the preload at crash time
+ * would risk deadlock if another thread held that lock when the crash hit. */
+static char **g_clean_envp;
+
+/* Alternate signal stack: a stack-overflow SIGSEGV leaves no usable stack for
+ * the handler, so it runs here (16 KiB) via SA_ONSTACK. */
+static char g_alt_stack[16 * 1024];
+
 /* Reentrancy guard: a second fatal signal arriving mid-handler is fatal. */
 static volatile sig_atomic_t g_in_handler = 0;
 
@@ -168,6 +177,19 @@ static uintptr_t instruction_pointer(void *uap)
 #endif
 }
 
+/* x86-64 page-fault error code (REG_ERR): bit 0 = protection vs not-present,
+ * bit 1 = write vs read. Only meaningful for SIGSEGV/SIGBUS; 0 elsewhere. */
+static uintptr_t fault_error_code(void *uap)
+{
+    ucontext_t *uc = (ucontext_t *)uap;
+#ifdef __x86_64__
+    return (uintptr_t)uc->uc_mcontext.gregs[REG_ERR];
+#else
+    (void)uc;
+    return 0;
+#endif
+}
+
 /* The "referenced address" shown by the access-violation and illegal
  * instruction templates. SIGFPE/SIGABRT never expose a fake fault address. */
 static uintptr_t fault_address(int sig, const siginfo_t *info, uintptr_t ip)
@@ -184,15 +206,19 @@ static uintptr_t fault_address(int sig, const siginfo_t *info, uintptr_t ip)
     }
 }
 
-/* Map (signal, si_code) to a dialog category. SEGV_MAPERR (and any unknown
- * access type) is the funny "read" wording; SEGV_ACCERR is "written";
- * BUS_ADRALN is the intentionally broken "aligned". */
-static int classify(int sig, int code)
+/* Map (signal, si_code, page-fault error code) to a dialog category.
+ *
+ * The "read"/"written" wording is about the ACCESS TYPE, which si_code alone
+ * cannot tell: reading a PROT_NONE page is SEGV_ACCERR, writing an unmapped
+ * page is SEGV_MAPERR. On x86-64 we use the page-fault error code's write
+ * bit; elsewhere we fall back to the fixed "read". BUS_ADRALN stays the
+ * intentionally broken "aligned". */
+static int classify(int sig, int code, uintptr_t fault_err)
 {
     switch (sig)
     {
     case SIGSEGV:
-        return code == SEGV_ACCERR ? KIND_SEGV_WRITTEN : KIND_SEGV_READ;
+        return (fault_err & 0x2U) != 0 ? KIND_SEGV_WRITTEN : KIND_SEGV_READ;
     case SIGBUS:
         return code == BUS_ADRALN ? KIND_BUS_ALIGNED : KIND_BUS_READ;
     case SIGILL:
@@ -239,6 +265,17 @@ static pid_t crash_fork(void)
 #endif
 }
 
+/* execve with the LD_PRELOAD-free environment snapshot, falling back to
+ * execv (which just reads environ, no lock) if the snapshot is unavailable. */
+static void exec_clean(const char *path, char *const argv[])
+{
+    if (g_clean_envp != NULL)
+    {
+        execve(path, argv, g_clean_envp);
+    }
+    execv(path, argv);
+}
+
 /* Stage 2 (取消 only): fork a child that launches gdb -p <pid> in a
  * terminal, wait for it to exit, then terminate through the original
  * signal. The parent stays frozen in the handler while gdb attaches. */
@@ -254,18 +291,17 @@ static _Noreturn void launch_debugger(int sig)
     }
     if (dbg == 0)
     {
-        /* Child: strip the preload so neither the terminal, gdb, nor any
-         * inferior inherits this crash handler. */
-        unsetenv("LD_PRELOAD");
+        /* Child: exec through the LD_PRELOAD-free environment so neither the
+         * terminal, gdb, nor any inferior inherits this crash handler. */
         if (g_konsole[0] != '\0' && g_gdb[0] != '\0')
         {
             char *konsole_argv[] = {g_konsole, "-e", g_gdb, "-p", pidstr, NULL};
-            execv(g_konsole, konsole_argv);
+            exec_clean(g_konsole, konsole_argv);
         }
         if (g_kitty[0] != '\0' && g_gdb[0] != '\0')
         {
             char *kitty_argv[] = {g_kitty, g_gdb, "-p", pidstr, NULL};
-            execv(g_kitty, kitty_argv);
+            exec_clean(g_kitty, kitty_argv);
         }
         _exit(126);
     }
@@ -296,7 +332,8 @@ static void crash_handler(int sig, siginfo_t *info, void *uap)
 
     uintptr_t ip = instruction_pointer(uap);
     uintptr_t fault = fault_address(sig, info, ip);
-    int kind = classify(sig, info->si_code);
+    uintptr_t fault_err = fault_error_code(uap);
+    int kind = classify(sig, info->si_code, fault_err);
 
     fmt_hex(g_ipstr, ip);
     fmt_hex(g_faultstr, fault);
@@ -316,8 +353,7 @@ static void crash_handler(int sig, siginfo_t *info, void *uap)
     }
     if (dlg == 0)
     {
-        unsetenv("LD_PRELOAD");
-        execv(g_helper_path, dialog_argv);
+        exec_clean(g_helper_path, dialog_argv);
         _exit(127);
     }
 
@@ -433,16 +469,49 @@ static void resolve_tools(void)
     find_executable("gdb", g_gdb, sizeof(g_gdb));
 }
 
+/* Snapshot environ without LD_PRELOAD, at load time when allocation and
+ * strncmp are safe, so the crash child can execve without touching environ. */
+static void build_clean_envp(void)
+{
+    size_t n = 0;
+    for (char **e = environ; *e != NULL; ++e)
+    {
+        ++n;
+    }
+    char **envp = (char **)malloc((n + 1) * sizeof(char *));
+    if (envp == NULL)
+    {
+        return;
+    }
+    size_t j = 0;
+    for (char **e = environ; *e != NULL; ++e)
+    {
+        if (strncmp(*e, "LD_PRELOAD=", 11) != 0)
+        {
+            envp[j++] = *e;
+        }
+    }
+    envp[j] = NULL;
+    g_clean_envp = envp;
+}
+
 __attribute__((constructor)) static void schrodinger_init(void)
 {
     resolve_program();
     resolve_helper_path();
     resolve_tools();
+    build_clean_envp();
+
+    stack_t ss;
+    ss.ss_sp = g_alt_stack;
+    ss.ss_size = sizeof(g_alt_stack);
+    ss.ss_flags = 0;
+    sigaltstack(&ss, NULL);
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = crash_handler;
-    sa.sa_flags = SA_SIGINFO;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
 
     for (size_t i = 0; i < NSIG_HANDLED; ++i)

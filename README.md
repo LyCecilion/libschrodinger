@@ -36,8 +36,8 @@
 
 | 信号 | 文案模板 |
 | --- | --- |
-| `SIGSEGV`（`SEGV_MAPERR`） | `"<ip>" 指令引用的 "<addr>" 内存。该内存不能为 read。` |
-| `SIGSEGV`（`SEGV_ACCERR`） | 同上，但为 `written` |
+| `SIGSEGV`（读访问） | `"<ip>" 指令引用的 "<addr>" 内存。该内存不能为 read。` |
+| `SIGSEGV`（写访问） | 同上，但为 `written` |
 | `SIGBUS`（`BUS_ADRALN`） | 同上，但为 `aligned`（故意保留的破文案） |
 | `SIGBUS`（其他） | 同上，`read` |
 | `SIGILL` | `"<ip>" 指令引用的 "<addr>" 内存。该指令不能为 execute。` |
@@ -45,6 +45,8 @@
 | `SIGABRT` | MSVCRT 风格：`Runtime Error!` 一段，仅一个 `确定` 按钮 |
 
 `SIGFPE` 与 `SIGABRT` 不会伪造内存故障地址。
+
+`read`/`written` 由 x86-64 页故障错误码的写位判定，而非 `si_code`：读 `PROT_NONE` 页是 `SEGV_ACCERR`，写未映射页是 `SEGV_MAPERR`，两者都会因 `si_code` 误判。
 
 ## 🚀 Build
 
@@ -119,11 +121,56 @@ LD_PRELOAD="$PWD/../build/libschrodinger.so" ./crash_segv_write
 
 ## 🤔 原理
 
-> **TL;DR: `LD_PRELOAD` 加载本库后，`__attribute__((constructor))` 在崩溃前缓存辅助程序路径、程序名与终端/gdb 路径，并为致命信号安装 `SA_SIGINFO` 处理器。崩溃时处理器 fork 出一个干净的 Qt 辅助进程显示对话框，按用户选择恢复并重投递原信号，或先附加 gdb 再终止。**
+> **TL;DR: `LD_PRELOAD` 让动态链接器在程序启动前先加载本库，库的构造函数给五个致命信号装上处理器。崩溃时处理器不直接弹窗——信号处理器里不能碰 Qt、malloc 这类东西——而是 fork 一个干净子进程去 exec Qt 辅助程序；父进程等用户点按钮，再按选择恢复原信号终止，或先拉起 gdb 再终止。**
 
-崩溃路径严格限制在 `fork`/`exec`/`wait`/`write`/`kill` 一族异步信号安全操作：所有非平凡字符串在构造函数中预计算；地址用固定缓冲区的十六进制格式化器生成；fork 使用绕过 atfork 处理器的裸 syscall（x86-64 用 `SYS_fork`，aarch64 用 `SYS_clone`），避免信号打断了持锁线程后子进程死锁；子进程在 `exec` 前 `unsetenv("LD_PRELOAD")`，使 Qt 辅助程序不会递归安装本处理器。
+下面按「谁加载、何时装、崩溃时干什么、为什么这样设计」的顺序展开。
 
-一个 `volatile sig_atomic_t` 重入守卫确保第二个致命信号到来时立即恢复默认处置并重投递。
+### 1. 谁加载、何时装
+
+Linux 的动态链接 ELF 程序启动时，动态链接器会先加载 `LD_PRELOAD` 指定的共享对象，再加载程序的普通依赖。`libschrodinger.so` 一被加载，它的 `__attribute__((constructor))` 构造函数 `schrodinger_init()` 就立刻执行——此时程序还没进 `main()`，崩溃也还没发生。
+
+构造函数在这个「安全、单线程、能随意 malloc」的时机，把所有能在崩溃前做掉的事提前做完：
+
+- 用 `dladdr()` 拿到库自身的绝对路径，推出同目录下 `schrodinger-dialog` 辅助程序的路径（运行时不依赖当前工作目录）；
+- 从 `/proc/self/exe` 读出可执行文件 basename，作为对话框标题里的程序名；
+- 在 `PATH` 里解析出 `konsole`、`kitty`、`gdb` 的绝对路径；
+- 预计算一份去掉 `LD_PRELOAD` 的环境快照；
+- 用 `sigaltstack` 注册一块 16 KiB 备用信号栈；
+- 用 `sigaction(..., SA_SIGINFO | SA_ONSTACK)` 给 `SIGSEGV`/`SIGBUS`/`SIGILL`/`SIGFPE`/`SIGABRT` 装上同一个处理器，并缓存这五个信号的原始处置，以便稍后恢复。
+
+「提前做完」是关键：崩溃那一刻的处理器只能做极小一撮操作（见下），所以越多的活提前干完，崩溃路径就越短、越不容易出错。
+
+### 2. 崩溃时内核做了什么
+
+程序触发 `SIGSEGV` 这类致命信号时，内核默认会立刻杀掉进程。但我们把默认处置换成了自己的处理器，于是内核改而调用 `crash_handler()`，并塞给它两样东西：
+
+- `siginfo_t`：`si_addr`（故障地址）、`si_code`（故障子类型，如 `SEGV_MAPERR`/`SEGV_ACCERR`）等；
+- `ucontext_t`：寄存器现场，能取出 `RIP`（指令指针）和 `REG_ERR`（页故障错误码）。
+
+处理器运行在一个极其受限的环境里，术语叫「异步信号安全」（async-signal-safe）：信号可能落在程序执行到**任意一行**的那一刻，比如某个线程正握着 `malloc` 的内部锁。此时处理器若再调 `malloc`/`printf`/`setenv`，就可能去抢一把永远拿不到的锁，整个进程卡死。所以处理器只允许 `fork`/`exec`/`wait`/`write`/`kill`/`sigaction` 这一族 syscall，连格式化地址都是自己写的纯算术固定缓冲实现，不碰 libc 的分配器。
+
+### 3. 为什么 fork 一个子进程去弹窗
+
+弹 Qt 窗口要初始化 `QApplication`、分配内存、连显示服务器——全是处理器里不能做的事。解法是 `fork()`：子进程拿到一份内存快照，却是全新的执行流，可以自由做任何事。子进程 `exec` 成 `schrodinger-dialog`，把信号号、`si_code`、指令地址、故障地址、文案类别作为参数传进去；父进程留在处理器里 `waitpid`，等用户的选择。
+
+这里不用 glibc 的 `fork()`，而是裸 `syscall(SYS_fork)`（aarch64 是 `SYS_clone`）。因为 glibc 的 `fork()` 会跑 `pthread_atfork` 回调，若崩溃恰好打断了一个持锁线程，这些回调同样会去抢那把死锁；裸 syscall 直接进内核，不碰任何用户态锁。
+
+子进程在 `exec` 前必须摘掉 `LD_PRELOAD`，否则 Qt 辅助程序会再次加载本库、递归装处理器。但 `unsetenv()` 会锁 `environ`、不是异步信号安全的，于是改成构造函数预计算那份不含 `LD_PRELOAD` 的环境快照，子进程直接 `execve(..., 快照)`。
+
+### 4. 两个按钮、两条路
+
+辅助程序按按钮退出，用退出码回报父进程：
+
+- `0`（确定）：父进程恢复该信号的原始处置、解除屏蔽，`raise()` 重新投递原信号。程序于是走完「正常崩溃」的路径（比如产生 core dump）——对话框不吞掉崩溃。
+- `1`（取消）：对话框已关闭，父进程再 fork 一个子进程去 exec `konsole -e gdb -p <pid>`（回退 `kitty`）。父进程继续冻结在处理器里等 gdb 退出，所以 gdb 能 inspect 到原始崩溃现场和信号帧；gdb 一退出，父进程再按原信号终止。
+- 其它退出码（`125` 参数无效、Qt 起不来、子进程异常退出）：一律回退成「正常终止」，绝不变成杀不死的进程。
+
+### 5. 几个容易被忽略的细节
+
+- **`read`/`written` 从哪来**：`si_code` 只区分「页不存在」（`SEGV_MAPERR`）和「权限违规」（`SEGV_ACCERR`），并不区分读还是写——读 `PROT_NONE` 页是 `SEGV_ACCERR`，写未映射页却是 `SEGV_MAPERR`。所以 x86-64 上我们读页故障错误码 `REG_ERR` 的写位（bit 1）来定 `read`/`written`。
+- **备用信号栈**：栈耗尽触发的 `SIGSEGV`，往往连运行处理器的栈都没有。`sigaltstack` + `SA_ONSTACK` 给了处理器一块独立栈，这类崩溃也能弹出对话框。
+- **重入守卫**：处理器里若再来第二个致命信号，立即恢复默认处置并重投递，而不是再弹一个窗。`volatile sig_atomic_t` 保证这个判断原子。
+- **架构相关**：指令指针取 `REG_RIP`、错误码取 `REG_ERR`；aarch64 上尽量支持指令地址（`pc`），但读写区分退化回固定 `read`。
 
 ## 📄 License
 
