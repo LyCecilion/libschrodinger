@@ -95,8 +95,7 @@ LD_PRELOAD="$PWD/build/libschrodinger.so" \
 ```sh
 # SIGABRT
 LD_PRELOAD="$PWD/build/libschrodinger.so" python3 -c 'import os; os.abort()'
-# SIGFPE（整数除零）
-LD_PRELOAD="$PWD/build/libschrodinger.so" python3 -c '1//0'
+# SIGFPE —— 纯 Python 触发不了（1//0 是软件层 ZeroDivisionError，不产生信号），用 tests/crash_fpe
 # SIGSEGV（空指针读）
 LD_PRELOAD="$PWD/build/libschrodinger.so" python3 -c 'import ctypes; ctypes.string_at(0)'
 ```
