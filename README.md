@@ -12,6 +12,8 @@
 
 > [!WARNING]
 > **该项目仅供以测试和娱乐为目的的使用。**
+>
+> 在实际测试中已发现问题：对于开启 `drkonqi` 的 KDE 用户，在使用 `libschrodinger` 触发 16 次错误后会导致 `drkonqi` 不可用。请参见后文 [对于该问题的描述和解决方案](#连续触发-16-次错误导致-drkonqi-不可用)。
 
 ---
 
@@ -161,6 +163,28 @@ Linux 的动态链接 ELF 程序启动时，动态链接器会先加载 `LD_PREL
 - **备用信号栈**：栈耗尽触发的 `SIGSEGV`，往往连运行处理器的栈都没有。`sigaltstack` + `SA_ONSTACK` 给了处理器一块独立栈，这类崩溃也能弹出对话框。
 - **重入守卫**：处理器里若再来第二个致命信号，立即恢复默认处置并重投递，而不是再弹一个窗。`volatile sig_atomic_t` 保证这个判断原子。
 - **架构相关**：指令指针取 `REG_RIP`、错误码取 `REG_ERR`；aarch64 上尽量支持指令地址（`pc`），但读写区分退化回固定 `read`。
+
+### 连续触发 16 次错误导致 `drkonqi` 不可用
+
+当错误发生时，kernel 的 `core_pattern` 规定了将崩溃进程的 `pid`, `uid` 和信号等参数通过管道传递给 `/usr/lib/systemd/systemd-coredump`，后者将崩溃进程的内存转储为 `core` 文件并向 `journal` 内写入一条记录，包含栈回溯和模块列表。随后，`systemd-coredump@` 触发 `drkonqi-coredump-processor@`，后者判断崩溃的归属并转交崩溃信息。
+
+`processor` 作为 `root`，需要通知一个普通用户的桌面会话，但它不能向用户桌面弹窗。为了使得用户被通知，KDE 在用户会话中监听了 `MaxConnections` 为 `16` 的本地 socket。用户态的 launcher 通过这条路径得到崩溃信息后，会去启动图形界面 `drkonqi-coredump-gui`，如下图所示；而后者会在 `~/.cache/kcrash-metadata` 下寻找 `.ini` 文件。我们的裸 C 测试程序并未实现这一点，于是 launcher 卡在 `poll()` 中不退出。
+
+<div align="center">
+
+![DrKonqi 的错误界面 Crash Reporting System](./assets/drkonqi.png)
+
+</div>
+
+当累计 16 个这样的崩溃后，socket 被 16 个 zombie launcher 占满以填满了 `MaxConnections`，于是之后的每一次崩溃，processor 连 socket 都会被拒绝，`drkonqi` 停止弹窗。
+
+在 `drkonqi` 的 socket 被完全占用时，可以通过
+
+```sh
+pkill -f '^/usr/libexec/drkonqi-coredump-launcher'
+```
+
+重置 socket。之后的崩溃就可以正常走到 `drkonqi`。
 
 ## 📄 License
 
