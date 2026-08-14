@@ -67,6 +67,7 @@ static char g_program[NAME_MAX + 1];
 static char g_konsole[PATH_MAX];
 static char g_kitty[PATH_MAX];
 static char g_gdb[PATH_MAX];
+static char g_pwndbg[PATH_MAX];
 
 /* LD_PRELOAD-free environment snapshot, built at load time. unsetenv() is NOT
  * async-signal-safe (it locks environ), so removing the preload at crash time
@@ -292,16 +293,18 @@ static _Noreturn void launch_debugger(int sig)
     if (dbg == 0)
     {
         /* Child: exec through the LD_PRELOAD-free environment so neither the
-         * terminal, gdb, nor any inferior inherits this crash handler. */
-        if (g_konsole[0] != '\0' && g_gdb[0] != '\0')
+         * terminal, debugger, nor any inferior inherits this crash handler.
+         * Prefer pwndbg over gdb, and kitty over konsole. */
+        char *d = g_pwndbg[0] != '\0' ? g_pwndbg : g_gdb;
+        if (d[0] != '\0' && g_kitty[0] != '\0')
         {
-            char *konsole_argv[] = {g_konsole, "-e", g_gdb, "-p", pidstr, NULL};
-            exec_clean(g_konsole, konsole_argv);
-        }
-        if (g_kitty[0] != '\0' && g_gdb[0] != '\0')
-        {
-            char *kitty_argv[] = {g_kitty, g_gdb, "-p", pidstr, NULL};
+            char *kitty_argv[] = {g_kitty, d, "-p", pidstr, NULL};
             exec_clean(g_kitty, kitty_argv);
+        }
+        if (d[0] != '\0' && g_konsole[0] != '\0')
+        {
+            char *konsole_argv[] = {g_konsole, "-e", d, "-p", pidstr, NULL};
+            exec_clean(g_konsole, konsole_argv);
         }
         _exit(126);
     }
@@ -464,8 +467,9 @@ static void find_executable(const char *name, char *out, size_t outlen)
 
 static void resolve_tools(void)
 {
-    find_executable("konsole", g_konsole, sizeof(g_konsole));
     find_executable("kitty", g_kitty, sizeof(g_kitty));
+    find_executable("konsole", g_konsole, sizeof(g_konsole));
+    find_executable("pwndbg", g_pwndbg, sizeof(g_pwndbg));
     find_executable("gdb", g_gdb, sizeof(g_gdb));
 }
 

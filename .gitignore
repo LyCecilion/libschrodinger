@@ -117,3 +117,4 @@ tags
 
 # Build output
 build/
+.gdb_history
