@@ -12,9 +12,13 @@
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QColor>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
 #include <QString>
 #include <QVBoxLayout>
@@ -47,6 +51,29 @@ constexpr int EXIT_OK = 0;
 constexpr int EXIT_DEBUG = 1;
 constexpr int EXIT_HELPER_FAILURE = 125;
 
+// Draw the classic Windows error icon (red circle + white X). The theme's
+// SP_MessageBoxCritical can render as a "no entry" bar on some platforms, so
+// we paint a deterministic 叉号 ourselves.
+QPixmap errorIcon(int size)
+{
+    QPixmap pixmap(size, size);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor::fromRgb(0xc4, 0x2b, 0x1c));
+    painter.drawEllipse(0, 0, size, size);
+
+    const int margin = size * 3 / 10;
+    QPen pen(Qt::white, size / 12.0);
+    pen.setCapStyle(Qt::RoundCap);
+    painter.setPen(pen);
+    painter.drawLine(margin, margin, size - margin, size - margin);
+    painter.drawLine(size - margin, margin, margin, size - margin);
+    return pixmap;
+}
+
 class CrashDialog : public QDialog
 {
   public:
@@ -55,15 +82,27 @@ class CrashDialog : public QDialog
         : QDialog(parent)
     {
         setWindowTitle(title);
-        setMinimumWidth(480);
+        setMinimumWidth(720);
 
         auto *layout = new QVBoxLayout(this);
 
-        auto *label = new QLabel(body, this);
+        auto *top = new QHBoxLayout();
+        auto *icon = new QLabel(this);
+        icon->setPixmap(errorIcon(32));
+        top->addWidget(icon, 0, Qt::AlignTop);
+
+        QString fullBody = body;
+        if (allowCancel)
+        {
+            fullBody +=
+                QStringLiteral("\n\n要终止程序，请单击“确定”；\n要调试程序，请单击“取消”。");
+        }
+
+        auto *label = new QLabel(fullBody, this);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
         label->setWordWrap(true);
-        layout->addWidget(label);
-
+        top->addWidget(label, 1);
+        layout->addLayout(top);
         auto *buttons = new QDialogButtonBox(this);
         auto *ok = buttons->addButton(QStringLiteral("确定"), QDialogButtonBox::AcceptRole);
         ok->setDefault(true);
