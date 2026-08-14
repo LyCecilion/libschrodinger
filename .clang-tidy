@@ -1,0 +1,37 @@
+Checks: >
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  clang-diagnostic-*,
+  concurrency-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  -readability-braces-around-statements,
+  -readability-isolate-declaration,
+  -readability-*-length,
+  -readability-magic-numbers,
+  -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner,
+  -bugprone-easily-swappable-parameters,
+
+WarningsAsErrors: >
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  clang-diagnostic-*,
+  concurrency-*,
+  performance-*
+
+CheckOptions:
+  - key: modernize-use-override.IgnoreDestructors
+    value: true
+  - key: misc-const-correctness.AnalyzeValues
+    value: false
+  - key: readability-identifier-length.MinimumVariableNameLength
+    value: 1
+  - key: readability-function-cognitive-complexity.Threshold
+    value: 50
+HeaderFilterRegex: ".*"
+FormatStyle: file

@@ -1,0 +1,12 @@
+CompileFlags:
+  CompilationDatabase: build
+
+Index:
+  Background: Build
+InlayHints:
+  BlockEnd: true
+  Designators: true
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true
+  TypeNameLimit: 24
