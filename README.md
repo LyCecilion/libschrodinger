@@ -2,64 +2,61 @@
 
 <div align="center">
 
-# 😨 libschrodinger 🤣
+![Banner Image](./assets/banner.png)
 
-**「我修复了 Linux 崩溃信息看得懂的 Bug」**
+# 🤔 libschrodinger 🥵
+
+**我修复了 Linux 没有「应用程序错误」窗口的 Bug**
 
 </div>
 
 > [!WARNING]
 > **该项目仅供以测试和娱乐为目的的使用。**
->
-> 当前 `libschrodinger` 的实现面向 glibc/Linux（x86-64 为主，aarch64 尽力支持指令地址提取）。请勿将 `libschrodinger` 设置在 shell 的全局配置、systemd 环境或生产环境的 Linux 机器中，以免遇到无法诊断的问题。
 
 ---
 
 ## 📖 About
 
-`libschrodinger` 是一个 Linux 上的 `LD_PRELOAD` 整活项目。
+`libschrodinger` 是 Linux 上的一个 `LD_PRELOAD` 整活项目。
 
-`libschrodinger` 只拦截致命信号（`SIGSEGV`、`SIGBUS`、`SIGILL`、`SIGFPE`、`SIGABRT`），在崩溃时弹出一个微软风格的简体中文错误对话框，还原某 **现代商业操作系统** 那个「指令引用的内存不能为 read」的神秘提示：
+`libschrodinger` 在程序触发部分致命信号（如 `SIGSEGV`、`SIGBUS`、`SIGILL`、`SIGFPE`、`SIGABRT` 等）时拦截，弹出一个 Microsoft Windows 风格的错误对话框，以还原该 **现代商业操作系统** 自 Windows XP 流传下来的神秘提示。普通 errno 报错、正常退出、`SIGINT`、`SIGTERM` 等不受影响。
 
-> `"0x00000000004011b7" 指令引用的 "0x0000000000000000" 内存。该内存不能为 read。`
+## ✨ Features
 
-普通 errno 报错、正常退出、`SIGINT`、`SIGTERM` 均不受影响。
+弹出的对话框上复刻了 Windows 的两个按钮。其中「**确定**」将恢复之前的信号处置流程并重新投递原信号，程序按照正常路径终止；「**取消**」将关闭对话框，随后在终端（优先 `kitty`、回退 `konsole`）中启动 `pwndbg -p <pid>`（回退 `gdb`）附加到仍然冻结在信号处理上下文中的进程。关闭调试器后，程序按照原信号终止。
 
-## ✨ 行为
+当前版本的 `libschrodinger` 支持下面的信号：
 
-对话框上有两个按钮：
-
-- **确定** — 恢复之前的信号处置并重新投递原信号，程序按正常路径终止（默认产生 core dump）。
-- **取消** — 对话框立即关闭，随后在终端（`kitty`，回退到 `konsole`）中启动 `pwndbg -p <pid>`（回退 `gdb`）附加到仍然冻结在信号处理上下文中的进程；关闭调试器后，程序才按原信号终止。
-
-各信号使用的文案：
-
-| 信号 | 文案模板 |
+| 信号 | 提示文本 |
 | --- | --- |
 | `SIGSEGV`（读访问） | `"<ip>" 指令引用的 "<addr>" 内存。该内存不能为 read。` |
 | `SIGSEGV`（写访问） | 同上，但为 `written` |
-| `SIGBUS`（`BUS_ADRALN`） | 同上，但为 `aligned`（故意保留的破文案） |
-| `SIGBUS`（其他） | 同上，`read` |
+| `SIGBUS`（`BUS_ADRALN`） | 同上，但为 `aligned` |
+| `SIGBUS`（其他） | 同上，但为 `read` |
 | `SIGILL` | `"<ip>" 指令引用的 "<addr>" 内存。该指令不能为 execute。` |
 | `SIGFPE`（整数除零等） | `"<ip>" 处发生整数除法。该除数不能为 zero。` 等，按 `si_code` 细分 |
 | `SIGABRT` | MSVCRT 风格：`Runtime Error!` 一段，仅一个 `确定` 按钮 |
 
-`SIGFPE` 与 `SIGABRT` 不会伪造内存故障地址。
+`SIGFPE` 与 `SIGABRT` 不会显示内存故障地址，仅显示发生的运算类型。
 
-`read`/`written` 由 x86-64 页故障错误码的写位判定，而非 `si_code`：读 `PROT_NONE` 页是 `SEGV_ACCERR`，写未映射页是 `SEGV_MAPERR`，两者都会因 `si_code` 误判。
+`read` / `written` 不由 `si_code` 判断，而由 x86-64 页故障错误码的写位判定：读 `PROT_NONE` 页时是 `SEGV_ACCERR`，写未映射页时是 `SEGV_MAPERR`。
+
+## 👀 Preview
+
+![触发 SIGILL 弹窗](./assets/preview.png)
 
 ## 🚀 Build
 
-需要 Nix（提供可复现的 Qt6 Widgets 开发环境）。克隆后编译：
+构建时需要 Qt6 Widgets 开发环境、GCC 和 G++、Make。对于 Nix 用户，可以 `git clone` 该 repo 后使用 `nix develop` 准备开发环境：
 
 ```sh
 gh repo clone LyCecilion/libschrodinger
 cd libschrodinger
-nix develop    # 或 direnv allow
+nix develop
 make
 ```
 
-编译产物：
+对于其他用户，参阅对应发行版的包管理器以安装全部依赖。`make` 后会获得 2 个编译产物：
 
 ```text
 ./build/libschrodinger.so    # ELF 共享对象（LD_PRELOAD 库）
@@ -82,46 +79,39 @@ file ./build/libschrodinger.so ./build/schrodinger-dialog
 LD_PRELOAD="$PWD/build/libschrodinger.so" <program>
 ```
 
-一个可复现的崩溃示例：
-
-```sh
-LD_PRELOAD="$PWD/build/libschrodinger.so" \
-  python3 -c 'import ctypes; ctypes.string_at(0)'
-```
-
-- 点击 **确定** → 正常终止 / core dump 行为。
-- 点击 **取消** → 对话框先关闭，随后 `kitty`（或 `konsole`）打开 `pwndbg -p <pid>`（或 `gdb`），可检查仍存活的进程与栈；退出调试器后进程终止。
-
-### 手动触发各信号
+下面给出一些可复现的崩溃示例：
 
 ```sh
 # SIGABRT
 LD_PRELOAD="$PWD/build/libschrodinger.so" python3 -c 'import os; os.abort()'
-# SIGFPE —— 纯 Python 触发不了（1//0 是软件层 ZeroDivisionError，不产生信号），用 tests/crash_fpe
-# SIGSEGV（空指针读）
+# SIGSEGV
 LD_PRELOAD="$PWD/build/libschrodinger.so" python3 -c 'import ctypes; ctypes.string_at(0)'
 ```
 
-也可以在 `tests/` 下用独立的 C 崩溃程序逐个触发（`cd tests && make`）：
+在崩溃发生后会弹出对话框。点击「**确定**」将会使程序继续以错误终止；点击「**取消**」则会先关闭对话框，再经由终端模拟器打开调试器，你可以在这里检查仍存活的进程与栈。退出调试器后程序终止。
+
+另一种方式是，在 `tests/` 下用独立的 C 崩溃程序逐个触发（`cd tests && make`）。例如测试 SIGSEGV 写：
 
 ```sh
-# SIGSEGV 读 / 写、SIGBUS、SIGILL、SIGFPE、SIGABRT 各一个，保证必定崩溃
 LD_PRELOAD="$PWD/../build/libschrodinger.so" ./crash_segv_write
 ```
 
-> 在 Nix dev shell 里编译 `tests/` 时，Nix 的 gcc wrapper 会默认注入 `-D_FORTIFY_SOURCE`，而测试程序刻意用 `-O0`（保证崩溃点不被优化掉），于是会触发一条无害的 `#warning _FORTIFY_SOURCE requires -O`，可忽略，不影响测试程序的行为。
+值得注意的是，在 Nix dev shell 里编译 `tests/` 时，Nix 的 gcc wrapper 会默认注入 `-D_FORTIFY_SOURCE`，而测试程序刻意用 `-O0`（保证崩溃点不被优化掉），于是会触发一条无害的 `#warning _FORTIFY_SOURCE requires -O`。该 warning 可忽略，不影响测试程序的行为。
 
 ## ❓ FAQ
 
-- **目标平台**是 glibc/Linux。不支持 musl、BSD、macOS、Windows，也不支持静态链接程序。
-- **setuid/setcap 程序**不注入 `LD_PRELOAD`，本库同样不注入。
-- **尽力而为**：辅助程序或调试器（`pwndbg`/`gdb`）无法启动、子进程失败时，一律回退为「恢复默认信号处置并重新投递原信号」的普通终止，绝不吞掉崩溃。需要图形环境（X11/Wayland）才能显示对话框。
-- 替换了致命信号处置的程序可能不会弹出对话框（其自身处置优先）。
-- 若 `kitty` 与 `konsole` 都不可用，`取消` 视为调试请求失败，直接正常终止。
+类似于前作 [libobscure](https://github.com/LyCecilion/libobscure)，该项目同样仅支持 Linux、不支持静态链接程序、不注入 setuid/setcap 程序。
+
+`libschrodinger` 默认你具有 X11/Wayland 图形环境、Kitty 和 Konsole 中至少其一、pwndbg 和 gdb 中至少其一。`libschrodinger` 的触发是尽力而为的，在子进程失败、调试器无法打开、终端模拟器不可用等任何情况下，`libschrodinger` 都会回退以恢复默认信号处置并重新投递原信号，不吞掉原程序的崩溃。
+
+`libschrodinger` 的错误处理逻辑可能会被目标程序内自带的错误处理逻辑替换。
 
 ## 🤔 原理
 
-> **TL;DR: `LD_PRELOAD` 让动态链接器在程序启动前先加载本库，库的构造函数给五个致命信号装上处理器。崩溃时处理器不直接弹窗——信号处理器里不能碰 Qt、malloc 这类东西——而是 fork 一个干净子进程去 exec Qt 辅助程序；父进程等用户点按钮，再按选择恢复原信号终止，或先拉起 gdb 再终止。**
+>[!NOTE]
+> 本节由 DeepSeek V4 Pro 0813 编写和校对。
+<!-- -->
+> **TL;DR:<br/>`LD_PRELOAD` 让动态链接器在程序启动前先加载本库，库的构造函数给五个致命信号装上处理器。崩溃时处理器不直接弹窗（信号处理器里不能碰 Qt、malloc 这类东西），而是 fork 一个干净子进程去 exec Qt 辅助程序；父进程等用户点按钮，再按选择恢复原信号终止，或先拉起 gdb 再终止。**
 
 下面按「谁加载、何时装、崩溃时干什么、为什么这样设计」的顺序展开。
 
@@ -176,9 +166,31 @@ Linux 的动态链接 ELF 程序启动时，动态链接器会先加载 `LD_PREL
 
 [MIT LICENSE](./LICENSE). By Limity'roChen & LyCecilion, 2026.
 
+## 🙏 Acknowledgments
+
+洛汐 (Limity'roChen) 和零音 (LyCecilion) 完成了该项目的文档和视频剪辑。DeepSeek V4 Pro 完成了该项目的全部代码和原理解释部分，GPT 5.6 sol 完成了代码审计。
+
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/chatgpt-white.png">
+  <img alt="ChatGPT" height="48" src="./assets/chatgpt-black.png">
+</picture>
+<img alt="DeepSeek" height="48" src="./assets/deepseek.png">
+
+GPT 5.6-sol & DeepSeek V4 Pro
+
+> 还有，感谢以上两位主要开发者，绝大部分的（代码上的）贡献都是他们做的。
+
+</div>
+
+另外，感谢 [Project Hazelita 社群](https://qm.qq.com/q/3cbSKydvj2) 成员的帮助。
+
 ---
 
 <div align="center">
+
+零音谨以此项目，祭奠一段已不值得祭奠的关系，并令众人行使其一切审判权。
 
 🍀 | 🌌 | 🪼 | ❄️
 
