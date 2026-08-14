@@ -87,6 +87,7 @@ class CrashDialog : public QDialog
         auto *layout = new QVBoxLayout(this);
 
         auto *top = new QHBoxLayout();
+        top->setSpacing(16);
         auto *icon = new QLabel(this);
         icon->setPixmap(errorIcon(32));
         top->addWidget(icon, 0, Qt::AlignTop);
@@ -101,7 +102,8 @@ class CrashDialog : public QDialog
         auto *label = new QLabel(fullBody, this);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
         label->setWordWrap(true);
-        top->addWidget(label, 1);
+        label->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+        top->addWidget(label, 1, Qt::AlignTop);
         layout->addLayout(top);
         auto *buttons = new QDialogButtonBox(this);
         auto *ok = buttons->addButton(QStringLiteral("确定"), QDialogButtonBox::AcceptRole);
