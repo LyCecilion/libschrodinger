@@ -101,6 +101,13 @@ LD_PRELOAD="$PWD/build/libschrodinger.so" python3 -c '1//0'
 LD_PRELOAD="$PWD/build/libschrodinger.so" python3 -c 'import ctypes; ctypes.string_at(0)'
 ```
 
+也可以在 `tests/` 下用独立的 C 崩溃程序逐个触发（`cd tests && make`）：
+
+```sh
+# SIGSEGV 读 / 写、SIGBUS、SIGILL、SIGFPE、SIGABRT 各一个，保证必定崩溃
+LD_PRELOAD="$PWD/../build/libschrodinger.so" ./crash_segv_write
+```
+
 ## ❓ FAQ
 
 - **目标平台**是 glibc/Linux。不支持 musl、BSD、macOS、Windows，也不支持静态链接程序。
