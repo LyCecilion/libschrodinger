@@ -108,6 +108,8 @@ LD_PRELOAD="$PWD/build/libschrodinger.so" python3 -c 'import ctypes; ctypes.stri
 LD_PRELOAD="$PWD/../build/libschrodinger.so" ./crash_segv_write
 ```
 
+> 在 Nix dev shell 里编译 `tests/` 时，Nix 的 gcc wrapper 会默认注入 `-D_FORTIFY_SOURCE`，而测试程序刻意用 `-O0`（保证崩溃点不被优化掉），于是会触发一条无害的 `#warning _FORTIFY_SOURCE requires -O`，可忽略，不影响测试程序的行为。
+
 ## ❓ FAQ
 
 - **目标平台**是 glibc/Linux。不支持 musl、BSD、macOS、Windows，也不支持静态链接程序。
